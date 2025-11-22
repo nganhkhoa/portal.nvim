@@ -5,6 +5,9 @@ local winmgr = require('portal.window')
 local function refresh(browser)
   local lines = {}
   local buffers = vim.fn.getbufinfo({ buflisted = 1 })
+  table.sort(buffers, function(a, b)
+    return a.lastused > b.lastused
+  end)
   for _, buffer in ipairs(buffers) do
     if buffer.name == "" then
       table.insert(lines, buffer.bufnr .. " - [NoName]")
