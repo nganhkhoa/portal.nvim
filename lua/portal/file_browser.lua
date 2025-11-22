@@ -10,7 +10,7 @@ local function get_initial_path()
   if current_file == '' or vim.fn.filereadable(current_file) == 0 then
     return vim.fn.getcwd()
   else
-    local dir_path = vim.fn.fnamemodify(current_file, ':p:h')
+    local dir_path = vim.fs.dirname(current_file)
     return vim.fn.resolve(dir_path)
   end
 end
@@ -21,33 +21,62 @@ local function refresh(browser)
     show_hidden = browser.state.show_hidden,
     show_git_ignore = browser.state.show_git_ignore,
   })
+
   -- add icons
   browser:update_lines(lines)
-  -- browser:set_cursor()
+
+  -- set cursor when open from a file
+  -- or moving from folder to folder
+  local prev = browser.state.cursor_file
+  if prev == nil then
+    return
+  end
+
+  local cursor_idx = 1
+  local current = browser.state.current_path
+  -- print(current, vim.inspect(lines), prev)
+  for i, path in ipairs(lines) do
+    -- because of styling we put / for folders in lines
+    local entry = vim.fs.joinpath(current, path):gsub('/$', '')
+    if entry == prev then
+      cursor_idx = i
+      break
+    end
+  end
+  browser:set_cursor(cursor_idx)
+end
+
+local function move_to_parent(browser)
+  local current = browser.state.current_path:gsub('/$', '')
+  browser.state.cursor_file = current
+  browser.state.current_path = vim.fs.dirname(current)
+  refresh(browser)
 end
 
 local function navigate_entry(browser)
   local state = browser.state
-
   local line = vim.api.nvim_get_current_line()
-  local item_name = line:gsub('/', '')
-  local full_path = state.current_path .. '/' .. item_name
+  local item_name = line:gsub('/$', '')
 
-  local enter_folder = item_name == '..' or vim.fn.isdirectory(full_path) == 1
+  if item_name == '..' then
+    move_to_parent(browser)
+    return
+  end
 
+  browser.state.cursor_file = state.current_path
+  local full_path = vim.fs.joinpath(state.current_path, item_name)
+
+  -- print('navigate entry from ' .. state.current_path .. ' to ' .. item_name .. ' -> ' .. full_path)
+
+  local enter_folder = vim.fn.isdirectory(full_path) == 1
   if enter_folder then
-    state.current_path = vim.fn.fnamemodify(full_path, ':p')
-    browser.state = state -- update the state
+    state.current_path = full_path
+    browser.state = state
     refresh(browser)
   else
     -- exiting the browser will kill the browser
     vim.cmd('edit ' .. full_path)
   end
-end
-
-local function move_to_parent(browser)
-  browser.state.current_path = vim.fn.fnamemodify(browser.state.current_path, ':h')
-  refresh(browser)
 end
 
 local function quit_browser(browser)
@@ -62,7 +91,7 @@ local function new_file(browser)
   end
   filesystem.try_create({
     is_file = true,
-    path = filename,
+    path = vim.fs.joinpath(browser.state.current_path, filename),
   })
   refresh(browser)
 end
@@ -74,12 +103,37 @@ local function new_folder(browser)
   end
   filesystem.try_create({
     is_file = false,
-    path = foldername,
+    path = vim.fs.joinpath(browser.state.current_path, foldername),
   })
   refresh(browser)
 end
 
 local function rename(browser)
+  local line = vim.api.nvim_get_current_line()
+  local file = line:gsub('/$', '')
+
+  local newname = vim.fn.input("Rename file " .. file .. ' into? ')
+  if newname == nil or newname == "" then
+    return
+  end
+
+  local fullpath_old = vim.fs.joinpath(browser.state.current_path, file)
+  local fullpath_new = vim.fs.joinpath(browser.state.current_path, newname)
+  os.rename(fullpath_old, fullpath_new)
+  refresh(browser)
+end
+
+local function delete(browser)
+  local line = vim.api.nvim_get_current_line()
+  local file = line:gsub('/$', '')
+
+  local fullpath = vim.fs.joinpath(browser.state.current_path, file)
+  local confirm = vim.fn.input("Deleting file " .. fullpath .. '? (y/N) ')
+  if confirm == nil or confirm ~= "y" then
+    return
+  end
+  os.remove(fullpath)
+  refresh(browser)
 end
 
 local function toggle_hidden(browser)
@@ -97,6 +151,7 @@ local function register_bindings(browser)
   vim.keymap.set('n', 'i', function() new_file(browser) end, buffer_option)
   vim.keymap.set('n', 'o', function() new_folder(browser) end, buffer_option)
   vim.keymap.set('n', 'r', function() rename(browser) end, buffer_option)
+  vim.keymap.set('n', 'd', function() delete(browser) end, buffer_option)
   vim.keymap.set('n', '.', function() toggle_hidden(browser) end, buffer_option)
   vim.keymap.set('n', 'R', function() refresh(browser) end, buffer_option)
 end
@@ -110,8 +165,11 @@ function M.open()
   state.show_hidden = true
   state.show_git_ignore = true
 
+  state.cursor_file = nil
+
   current_file = vim.api.nvim_buf_get_name(state.last_open)
   if vim.fn.filereadable(current_file) == 1 then
+    state.cursor_file = current_file
     state.last_entry = vim.fn.fnamemodify(current_file, ':t')
   end
 
